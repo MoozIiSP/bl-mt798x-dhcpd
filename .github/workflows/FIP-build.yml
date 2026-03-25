@@ -24,8 +24,9 @@ on:
         default: '2025'
         type: choice
         options:
-          - SP1
           - 2025
+          - SP1
+          - SP2
           - all
       REPO_URL:
         description: 'Source repository'
@@ -33,12 +34,12 @@ on:
         default: 'https://github.com/Yuzhii0718/bl-mt798x-dhcpd'
         type: string
       REPO_BRANCH:
-        description: 'Repository branch (auto will pick master)'
+        description: 'Repository branch'
         required: true
         default: 'auto'
         type: string
       VARIANT:
-        description: 'Build variant (only effective for SP1/2025)'
+        description: 'Build variant'
         required: false
         default: 'default'
         type: choice
@@ -46,6 +47,7 @@ on:
           - default
           - ubootmod
           - nonmbm
+          - openwrt
       EXTRA_OPTION:
         description: 'Extra option'
         required: false
@@ -76,14 +78,16 @@ env:
   UPLOAD_TAG_NAME: ${{ github.event.inputs.MODEL }}
   REPO_URL: ${{ github.event.inputs.REPO_URL }}
   REPO_BRANCH_INPUT: ${{ github.event.inputs.REPO_BRANCH }}
+  FIP_VERSION_INPUT: ${{ github.event.inputs.FIP_VERSION || github.event.client_payload.FIP_VERSION || '2025' }}
   SSH_ACTIONS: false
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
   # ATF and U-Boot versions mapping/path
   atf24: atf-20240117-bacca82a8
-  uboot25: uboot-mtk-20250711
   atf25: atf-20250711
+  atf26: atf-20260123
+  uboot25: uboot-mtk-20250711
 
 jobs:
   build:
@@ -106,9 +110,9 @@ jobs:
         EXTRA_IN="${{ github.event.inputs.EXTRA_OPTION }}"
 
         case "$VARIANT_IN" in
-          default|ubootmod|nonmbm) ;;
+          default|ubootmod|nonmbm|openwrt) ;;
           *)
-            echo "Error: invalid VARIANT: '$VARIANT_IN' (expected default/ubootmod/nonmbm)" >&2
+            echo "Error: invalid VARIANT: '$VARIANT_IN' (expected default/ubootmod/nonmbm/openwrt)" >&2
             exit 1
             ;;
         esac
@@ -121,23 +125,26 @@ jobs:
             ;;
         esac
 
-        # Note: VARIANT is injected into build.sh only for SP1/2025 builds; EXTRA_OPTION applies to all versions
-        FIP_INPUT="${{ github.event.inputs.FIP_VERSION }}"
+        # Note: VARIANT is injected into build.sh only for uboot-2025 builds; EXTRA_OPTION applies to all versions
+        FIP_INPUT="$FIP_VERSION_INPUT"
+        FIP_INPUT="$(echo "$FIP_INPUT" | tr -d '\r' | sed -e 's/^[[:space:]]*//;s/[[:space:]]*$//')"
         if [[ "$FIP_INPUT" =~ ^(.+)-(mt798[0-9]+)$ ]]; then
           FIP_INPUT="${BASH_REMATCH[1]}"
         fi
         if [ "$FIP_INPUT" != "all" ]; then
-          if ! echo ",${FIP_INPUT}," | grep -Eq ',(SP1|2025)(,|$)'; then
+          if ! echo ",${FIP_INPUT}," | grep -Eq ',(SP1|SP2|2025)(,|$)'; then
             if [ "$VARIANT_IN" != "default" ] || [ "$EXTRA_IN" != "default" ]; then
               if [ "$VARIANT_IN" != "default" ]; then
-                echo "Note: current FIP_VERSION=$FIP_INPUT does not include SP1/2025; VARIANT will be ignored (EXTRA_OPTION still applies)."
+                echo "Note: current FIP_VERSION=$FIP_INPUT does not include SP1/SP2/2025; VARIANT will be ignored (EXTRA_OPTION still applies)."
               fi
             fi
           fi
         fi
 
-        if [ "$VARIANT_IN" = "ubootmod" ] && [ "$EXTRA_IN" = "multi_layout" ]; then
-          echo "Note: VARIANT=ubootmod does not support multi_layout; MULTI_LAYOUT will be forced off."
+        if [ "$EXTRA_IN" = "multi_layout" ]; then
+          if [ "$VARIANT_IN" = "ubootmod" ] || [ "$VARIANT_IN" = "openwrt" ]; then
+            echo "Note: VARIANT=$VARIANT_IN does not support multi_layout; MULTI_LAYOUT will be forced off."
+          fi
         fi
 
         if [ "${{ github.event.inputs.pub_release }}" = "false" ]; then
@@ -225,7 +232,8 @@ jobs:
         cd bl-mt798x-dhcpd
         mkdir -p model_lists
 
-        FIP_INPUT="${{ github.event.inputs.FIP_VERSION }}"
+        FIP_INPUT="$FIP_VERSION_INPUT"
+        FIP_INPUT="$(echo "$FIP_INPUT" | tr -d '\r' | sed -e 's/^[[:space:]]*//;s/[[:space:]]*$//')"
         SOC_FILTER=""
         if [[ "$FIP_INPUT" =~ ^(.+)-(mt798[0-9]+)$ ]]; then
           FIP_INPUT="${BASH_REMATCH[1]}"
@@ -235,7 +243,7 @@ jobs:
 
         # Parse the list of versions to process based on FIP_INPUT
         if [ "$FIP_INPUT" = "all" ]; then
-          SUPPORTED_VERSIONS=("SP1" "2025")
+          SUPPORTED_VERSIONS=("SP1" "SP2" "2025")
           echo "Detected 'all', will parse: ${SUPPORTED_VERSIONS[*]}"
         else
           IFS=',' read -ra SUPPORTED_VERSIONS <<< "$FIP_INPUT"
@@ -245,8 +253,9 @@ jobs:
         version_to_dirs() {
           local v="$1"
           case "$v" in
-            SP1) echo "${{ env.atf24 }}" "${{ env.uboot25 }}" ;;
             2025) echo "${{ env.atf25 }}" "${{ env.uboot25 }}" ;;
+            SP1) echo "${{ env.atf24 }}" "${{ env.uboot25 }}" ;;
+            SP2) echo "${{ env.atf26 }}" "${{ env.uboot25 }}" ;;
             *) echo "" "" ;;
           esac
         }
@@ -331,7 +340,8 @@ jobs:
         VARIANT_INPUT="${{ github.event.inputs.VARIANT }}"
         EXTRA_INPUT="${{ github.event.inputs.EXTRA_OPTION }}"
         
-        FIP_INPUT="${{ github.event.inputs.FIP_VERSION }}"
+        FIP_INPUT="$FIP_VERSION_INPUT"
+        FIP_INPUT="$(echo "$FIP_INPUT" | tr -d '\r' | sed -e 's/^[[:space:]]*//;s/[[:space:]]*$//')"
         SOC_FILTER=""
         if [[ "$FIP_INPUT" =~ ^(.+)-(mt798[0-9]+)$ ]]; then
           FIP_INPUT="${BASH_REMATCH[1]}"
@@ -341,7 +351,7 @@ jobs:
 
         # Parse the list of versions to process based on FIP_INPUT
         if [ "$FIP_INPUT" = "all" ]; then
-          SUPPORTED_VERSIONS=("SP1" "2025")
+          SUPPORTED_VERSIONS=("SP1" "SP2" "2025")
           echo "Detected 'all', will build: ${SUPPORTED_VERSIONS[*]}"
         else
           IFS=',' read -ra SUPPORTED_VERSIONS <<< "$FIP_INPUT"
@@ -420,11 +430,11 @@ jobs:
                 ;;
             esac
 
-            # VARIANT: effective only for SP1/2025; for other versions, force to default to avoid inconsistent descriptions (since build.sh only checks VARIANT for SP1/2025)
-            if [ "$version" = "2025" ] || [ "$version" = "SP1" ]; then
+            # VARIANT: effective only for uboot-2025; for other versions, force to default to avoid inconsistent descriptions (since build.sh only checks VARIANT for SP1/SP2/2025)
+            if [ "$version" = "2025" ] || [ "$version" = "SP1" ] || [ "$version" = "SP2" ]; then
               VARIANT="$VARIANT_INPUT"
               # variant ubootmod does not support multi_layout (consistent with build.sh logic), so we force disable it here to avoid inconsistent descriptions in the output
-              if [ "$VARIANT" = "ubootmod" ]; then
+              if [ "$VARIANT" = "ubootmod" ] || [ "$VARIANT" = "openwrt" ]; then
                 MULTI_LAYOUT=0
               fi
             else
@@ -530,14 +540,18 @@ jobs:
         echo "- Target models: ${{ env.UPLOAD_TAG_NAME }}" >> release.txt
         echo "- Source repo: ${{ env.REPO_URL }}" >> release.txt
         echo "- Branch: ${{ env.REPO_BRANCH }}" >> release.txt
-        echo "- Versions: ${{ github.event.inputs.FIP_VERSION }}" >> release.txt
+        echo "- Versions: $FIP_VERSION_INPUT" >> release.txt
 
         echo "- Extra options: ${{ github.event.inputs.EXTRA_OPTION }}" >> release.txt
 
         if [ "${{ github.event.inputs.VARIANT }}" = "nonmbm" ]; then
-          echo "- Enabled NONMBM variant (SP1/2025 only)" >> release.txt
+          echo "- Enabled NONMBM variant" >> release.txt
         elif [ "${{ github.event.inputs.VARIANT }}" = "ubootmod" ]; then
-          echo "- Enabled UBOOTMOD variant (SP1/2025 only)" >> release.txt
+          echo "- Enabled UBOOTMOD variant" >> release.txt
+        elif [ "${{ github.event.inputs.VARIANT }}" = "openwrt" ]; then
+          echo "- Enabled OPENWRT variant" >> release.txt
+          echo "- OPENWRT variant with **NO failsafe WEB UI**" >> release.txt
+          echo "- YOU NEED UPGRADE WITH TFTP METHOD" >> release.txt
         else
           echo "- Using DEFAULT variant" >> release.txt
         fi
